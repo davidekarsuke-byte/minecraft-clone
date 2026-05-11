@@ -23,23 +23,30 @@ let isPlaying = false;
 let isDead = false;
 let joyMoveX = 0;
 let joyMoveZ = 0;
+let joystickInitialized = false;
 
 function startGame() {
     if (isDead) return;
     blocker.style.opacity = '0';
     setTimeout(() => blocker.style.display = 'none', 300);
     isPlaying = true;
-    if (isMobile) mobileControls.style.display = 'block';
+    if (isMobile) {
+        mobileControls.style.display = 'block';
+        if (!joystickInitialized) {
+            const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'static', position: { left: '50%', top: '50%' }, color: 'white' });
+            joystick.on('move', (evt, data) => {
+                if (data && data.vector) {
+                    joyMoveX = data.vector.x; joyMoveZ = -data.vector.y;
+                }
+            });
+            joystick.on('end', () => { joyMoveX = 0; joyMoveZ = 0; });
+            joystickInitialized = true;
+        }
+    }
 }
 
 if (isMobile) {
     blocker.addEventListener('touchstart', (e) => { e.preventDefault(); startGame(); });
-    const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'static', position: { left: '50%', top: '50%' }, color: 'white' });
-    joystick.on('move', (evt, data) => {
-        const angle = data.angle.radian; const force = Math.min(data.force, 1);
-        joyMoveX = Math.cos(angle) * force; joyMoveZ = -Math.sin(angle) * force;
-    });
-    joystick.on('end', () => { joyMoveX = 0; joyMoveZ = 0; });
     document.getElementById('btn-attack').addEventListener('touchstart', (e) => { e.preventDefault(); cqcAttack(); });
 } else {
     blocker.addEventListener('click', () => { startGame(); });
@@ -399,8 +406,9 @@ function animate() {
 
     if (isPlaying && !isDead) {
         let dx = 0; let dz = 0;
-        if (isMobile) { dx = joyMoveX; dz = joyMoveZ; } 
-        else {
+        if (joyMoveX !== 0 || joyMoveZ !== 0) { 
+            dx = joyMoveX; dz = joyMoveZ; 
+        } else {
             if (keys.a) dx -= 1; if (keys.d) dx += 1;
             if (keys.w) dz -= 1; if (keys.s) dz += 1;
             if (dx !== 0 && dz !== 0) { const len = Math.sqrt(dx*dx + dz*dz); dx /= len; dz /= len; }
