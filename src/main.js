@@ -33,10 +33,13 @@ function startGame() {
     if (isMobile) {
         mobileControls.style.display = 'block';
         if (!joystickInitialized) {
-            const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'static', position: { left: '50%', top: '50%' }, color: 'white' });
+            const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'dynamic', color: 'white' });
             joystick.on('move', (evt, data) => {
-                if (data && data.vector) {
-                    joyMoveX = data.vector.x; joyMoveZ = -data.vector.y;
+                if (data && data.angle) {
+                    const angle = data.angle.radian;
+                    const force = Math.min(data.force, 1);
+                    joyMoveX = Math.cos(angle) * force;
+                    joyMoveZ = -Math.sin(angle) * force;
                 }
             });
             joystick.on('end', () => { joyMoveX = 0; joyMoveZ = 0; });
