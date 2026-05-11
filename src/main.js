@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { io } from 'socket.io-client';
-import nipplejs from 'nipplejs';
 
 const isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
@@ -33,16 +32,69 @@ function startGame() {
     if (isMobile) {
         mobileControls.style.display = 'block';
         if (!joystickInitialized) {
-            const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'dynamic', color: 'white' });
-            joystick.on('move', (evt, data) => {
-                if (data && data.angle) {
-                    const angle = data.angle.radian;
-                    const force = Math.min(data.force, 1);
-                    joyMoveX = Math.cos(angle) * force;
-                    joyMoveZ = -Math.sin(angle) * force;
+            const zone = document.getElementById('joystick-zone');
+            zone.innerHTML = `
+                <div id="joy-base" style="position: absolute; width: 100px; height: 100px; background: rgba(255,255,255,0.2); border-radius: 50%; display: none; transform: translate(-50%, -50%); pointer-events: none;">
+                    <div id="joy-stick" style="position: absolute; width: 40px; height: 40px; background: white; border-radius: 50%; top: 30px; left: 30px; pointer-events: none;"></div>
+                </div>
+            `;
+            const joyBase = document.getElementById('joy-base');
+            const joyStick = document.getElementById('joy-stick');
+            let touchId = null;
+            let startX = 0, startY = 0;
+
+            zone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (touchId !== null) return;
+                const touch = e.changedTouches[0];
+                touchId = touch.identifier;
+                startX = touch.clientX;
+                startY = touch.clientY;
+                
+                joyBase.style.left = startX + 'px';
+                joyBase.style.top = startY + 'px';
+                joyBase.style.display = 'block';
+                joyStick.style.transform = `translate(0px, 0px)`;
+            }, {passive: false});
+
+            zone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (let i=0; i<e.changedTouches.length; i++) {
+                    const touch = e.changedTouches[i];
+                    if (touch.identifier === touchId) {
+                        let dx = touch.clientX - startX;
+                        let dy = touch.clientY - startY;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        const maxDist = 50;
+                        if (dist > maxDist) {
+                            dx = (dx/dist)*maxDist;
+                            dy = (dy/dist)*maxDist;
+                        }
+                        joyStick.style.transform = `translate(${dx}px, ${dy}px)`;
+                        
+                        if (dist > 5) { // Deadzone
+                            joyMoveX = dx;
+                            joyMoveZ = dy; // Note: touch Y down is positive, moving player +Z (backward). This is correct!
+                        } else {
+                            joyMoveX = 0; joyMoveZ = 0;
+                        }
+                    }
                 }
-            });
-            joystick.on('end', () => { joyMoveX = 0; joyMoveZ = 0; });
+            }, {passive: false});
+
+            const endTouch = (e) => {
+                for (let i=0; i<e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === touchId) {
+                        touchId = null;
+                        joyBase.style.display = 'none';
+                        joyMoveX = 0;
+                        joyMoveZ = 0;
+                    }
+                }
+            };
+            zone.addEventListener('touchend', endTouch);
+            zone.addEventListener('touchcancel', endTouch);
+
             joystickInitialized = true;
         }
     }
@@ -410,7 +462,12 @@ function animate() {
     if (isPlaying && !isDead) {
         let dx = 0; let dz = 0;
         if (joyMoveX !== 0 || joyMoveZ !== 0) { 
-            dx = joyMoveX; dz = joyMoveZ; 
+            // Normalize joystick vector to guarantee full speed movement
+            const len = Math.sqrt(joyMoveX * joyMoveX + joyMoveZ * joyMoveZ);
+            if (len > 0.05) {
+                dx = joyMoveX / len; 
+                dz = joyMoveZ / len; 
+            }
         } else {
             if (keys.a) dx -= 1; if (keys.d) dx += 1;
             if (keys.w) dz -= 1; if (keys.s) dz += 1;
