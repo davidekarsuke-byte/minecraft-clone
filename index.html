@@ -2,32 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Web Voxel Game</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/src/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Advanced Stealth Game</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/src/style.css">
   </head>
   <body>
     <div id="blocker">
       <div id="instructions">
-        <span style="font-size:36px; font-weight: bold; color: #4ade80;">Voxel Web Game</span><br/><br/>
+        <span style="font-size:36px; font-weight: 900; color: #4ade80; letter-spacing: 2px;">TACTICAL ESPIONAGE</span><br/><br/>
         <span style="font-size:24px">Click to play</span>
         <br /><br />
-        Move: WASD<br/>
-        Jump: SPACE<br/>
-        Look: Mouse<br/>
-        Place Block: Right Click<br/>
-        Break Block: Left Click
+        <span style="color:#aaa; font-size:16px; line-height:1.5;">
+        Move: WASD / Joystick<br/>
+        Attack: Left Click / CQC Button<br/>
+        Avoid guards and cameras!<br/>
+        Reach the glowing green goal!
+        </span>
       </div>
     </div>
-    <div id="crosshair">+</div>
+    
+    <div id="hud">
+      <div id="phase-indicator" class="phase-normal">
+        <span id="phase-text">NORMAL</span>
+        <span id="phase-timer" style="font-size: 20px; margin-left: 10px;"></span>
+      </div>
+      <div id="hp-bar-container">
+        <div id="hp-bar"></div>
+        <div id="hp-text">100 / 100</div>
+      </div>
+    </div>
+    
+    <div id="game-over-overlay" style="display: none;">YOU DIED</div>
+    <div id="win-overlay" style="display: none;">MISSION COMPLETE</div>
+
     <div id="mobile-controls" style="display: none;">
       <div id="joystick-zone"></div>
       <div id="action-buttons">
-        <div class="mobile-btn" id="btn-color">🎨 Color</div>
-        <div class="mobile-btn" id="btn-jump">⬆️ Jump</div>
-        <div class="mobile-btn" id="btn-break">🔨 Break</div>
-        <div class="mobile-btn" id="btn-place">🧱 Place</div>
+        <div class="mobile-btn" id="btn-attack">🥊 CQC</div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

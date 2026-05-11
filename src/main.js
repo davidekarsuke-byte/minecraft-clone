@@ -1,364 +1,459 @@
 import * as THREE from 'three';
-import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { io } from 'socket.io-client';
 import nipplejs from 'nipplejs';
 
-// ---- Device Check ----
 const isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
-// ---- Socket.IO Setup ----
 const serverUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
     ? `http://${window.location.hostname}:3000` 
     : '/';
 const socket = io(serverUrl);
 
-// ---- Scene Setup ----
-const scene = new THREE.Scene();
-scene.background = new THREE.Color('#87CEEB');
-scene.fog = new THREE.Fog('#87CEEB', 20, 100);
+const blocker = document.getElementById('blocker');
+const mobileControls = document.getElementById('mobile-controls');
+const phaseIndicator = document.getElementById('phase-indicator');
+const phaseText = document.getElementById('phase-text');
+const phaseTimerElem = document.getElementById('phase-timer');
+const hpBar = document.getElementById('hp-bar');
+const hpText = document.getElementById('hp-text');
+const gameOverOverlay = document.getElementById('game-over-overlay');
+const winOverlay = document.getElementById('win-overlay');
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-camera.position.y = 2;
+let isPlaying = false;
+let isDead = false;
+let joyMoveX = 0;
+let joyMoveZ = 0;
 
-// Custom pitch object for mobile look controls
-const pitchObject = new THREE.Object3D();
-pitchObject.add(camera);
-const yawObject = new THREE.Object3D();
-yawObject.position.y = 2;
-yawObject.add(pitchObject);
-if (isMobile) {
-    scene.add(yawObject);
+function startGame() {
+    if (isDead) return;
+    blocker.style.opacity = '0';
+    setTimeout(() => blocker.style.display = 'none', 300);
+    isPlaying = true;
+    if (isMobile) mobileControls.style.display = 'block';
 }
 
+if (isMobile) {
+    blocker.addEventListener('touchstart', (e) => { e.preventDefault(); startGame(); });
+    const joystick = nipplejs.create({ zone: document.getElementById('joystick-zone'), mode: 'static', position: { left: '50%', top: '50%' }, color: 'white' });
+    joystick.on('move', (evt, data) => {
+        const angle = data.angle.radian; const force = Math.min(data.force, 1);
+        joyMoveX = Math.cos(angle) * force; joyMoveZ = -Math.sin(angle) * force;
+    });
+    joystick.on('end', () => { joyMoveX = 0; joyMoveZ = 0; });
+    document.getElementById('btn-attack').addEventListener('touchstart', (e) => { e.preventDefault(); cqcAttack(); });
+} else {
+    blocker.addEventListener('click', () => { startGame(); });
+    document.addEventListener('mousedown', (e) => { if(e.button === 0 && isPlaying) cqcAttack(); });
+}
+
+function cqcAttack() {
+    if (!isPlaying || isDead) return;
+    socket.emit('cqcAttack');
+    myPlayer.userData.punchTimer = 0.2;
+}
+
+// ---- Three.js Setup ----
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#050508');
+scene.fog = new THREE.Fog('#050508', 30, 80);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
-// ---- Lighting ----
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
 scene.add(ambientLight);
-
 const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-dirLight.position.set(50, 100, 50);
+dirLight.position.set(20, 50, 20);
 dirLight.castShadow = true;
-dirLight.shadow.camera.left = -50;
-dirLight.shadow.camera.right = 50;
-dirLight.shadow.camera.top = 50;
-dirLight.shadow.camera.bottom = -50;
+dirLight.shadow.camera.left = -60; dirLight.shadow.camera.right = 60;
+dirLight.shadow.camera.top = 60; dirLight.shadow.camera.bottom = -60;
 scene.add(dirLight);
 
-// ---- World Setup ----
-const objects = [];
-const blockMeshes = {};
+// ---- Materials & Geometries ----
+const wallMat = new THREE.MeshStandardMaterial({ color: '#2a2a35', roughness: 0.9 });
+const visionMat = new THREE.MeshBasicMaterial({ color: '#ff0000', transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+const camBaseMat = new THREE.MeshStandardMaterial({ color: '#888' });
 
-const groundGeo = new THREE.PlaneGeometry(200, 200);
-groundGeo.rotateX(-Math.PI / 2);
-const groundMat = new THREE.MeshStandardMaterial({ color: '#5b8c47', roughness: 0.8 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.receiveShadow = true;
-scene.add(ground);
-objects.push(ground);
-
-const blockColors = ['#8b5a2b', '#808080', '#e6e6e6', '#c2b280'];
-let currentBlockColorIndex = 0;
-let currentBlockColor = blockColors[0];
-const blockGeo = new THREE.BoxGeometry(1, 1, 1);
-
-function getBlockMaterial(color) {
-    return new THREE.MeshStandardMaterial({ color: color, roughness: 0.6, metalness: 0.1 });
-}
-
-function addBlockToScene(blockData) {
-    const key = `${blockData.x},${blockData.y},${blockData.z}`;
-    if (blockMeshes[key]) return;
-    const material = getBlockMaterial(blockData.color);
-    const mesh = new THREE.Mesh(blockGeo, material);
-    mesh.position.set(blockData.x, blockData.y, blockData.z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    objects.push(mesh);
-    blockMeshes[key] = mesh;
-}
-
-function removeBlockFromScene(pos) {
-    const key = `${pos.x},${pos.y},${pos.z}`;
-    const mesh = blockMeshes[key];
-    if (mesh) {
-        scene.remove(mesh);
-        objects.splice(objects.indexOf(mesh), 1);
-        delete blockMeshes[key];
-    }
-}
-
-// ---- Controls Setup ----
-let controls;
-const blocker = document.getElementById('blocker');
-const mobileControls = document.getElementById('mobile-controls');
-const instructions = document.getElementById('instructions');
-
-let isPlaying = false; // for mobile state
-let joyMoveForward = 0;
-let joyMoveRight = 0;
-let canJump = false;
-
-if (isMobile) {
-    blocker.style.display = 'none';
-    mobileControls.style.display = 'block';
-    isPlaying = true;
-
-    // Joystick
-    const joystick = nipplejs.create({
-        zone: document.getElementById('joystick-zone'),
-        mode: 'static',
-        position: { left: '50%', top: '50%' },
-        color: 'white'
-    });
-
-    joystick.on('move', (evt, data) => {
-        const angle = data.angle.radian;
-        const force = Math.min(data.force, 1);
-        joyMoveForward = Math.sin(angle) * force;
-        joyMoveRight = Math.cos(angle) * force;
-    });
-
-    joystick.on('end', () => {
-        joyMoveForward = 0;
-        joyMoveRight = 0;
-    });
-
-    // Mobile Look (Touch Drag on right half)
-    let touchStartX = 0;
-    let touchStartY = 0;
-    document.addEventListener('touchstart', (e) => {
-        if (e.target.closest('#joystick-zone') || e.target.closest('.mobile-btn')) return;
-        touchStartX = e.touches[0].pageX;
-        touchStartY = e.touches[0].pageY;
-    }, { passive: false });
-
-    document.addEventListener('touchmove', (e) => {
-        if (e.target.closest('#joystick-zone') || e.target.closest('.mobile-btn')) return;
-        e.preventDefault();
-        const touchX = e.touches[0].pageX;
-        const touchY = e.touches[0].pageY;
-        
-        const movementX = touchX - touchStartX;
-        const movementY = touchY - touchStartY;
-        
-        yawObject.rotation.y -= movementX * 0.005;
-        pitchObject.rotation.x -= movementY * 0.005;
-        pitchObject.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObject.rotation.x));
-        
-        touchStartX = touchX;
-        touchStartY = touchY;
-    }, { passive: false });
-
-} else {
-    controls = new PointerLockControls(camera, document.body);
-    instructions.addEventListener('click', () => { controls.lock(); });
-    controls.addEventListener('lock', () => {
-        blocker.style.opacity = '0';
-        setTimeout(() => blocker.style.display = 'none', 300);
-        isPlaying = true;
-    });
-    controls.addEventListener('unlock', () => {
-        blocker.style.display = 'flex';
-        setTimeout(() => blocker.style.opacity = '1', 10);
-        isPlaying = false;
-    });
-    scene.add(controls.getObject());
-}
-
-// ---- Interaction Functions ----
-const raycaster = new THREE.Raycaster();
-
-function performAction(actionType) {
-    if (!isPlaying) return;
+function createHumanoid(isPlayer) {
+    const group = new THREE.Group();
+    const color = isPlayer ? '#111' : '#455a43'; 
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
     
-    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-    const intersects = raycaster.intersectObjects(objects, false);
-    
-    if (intersects.length > 0) {
-        const intersect = intersects[0];
-        if (intersect.distance > 8) return;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), mat);
+    head.position.y = 1.7; head.castShadow = true; group.add(head);
 
-        if (actionType === 'break') {
-            if (intersect.object !== ground) {
-                const pos = intersect.object.position;
-                socket.emit('removeBlock', { x: pos.x, y: pos.y, z: pos.z });
-            }
-        } else if (actionType === 'place') {
-            const addPos = intersect.point.clone().add(intersect.face.normal.clone().multiplyScalar(0.5));
-            addPos.x = Math.round(addPos.x);
-            addPos.y = Math.round(addPos.y);
-            addPos.z = Math.round(addPos.z);
-            
-            // Prevent placing inside player
-            const playerPos = isMobile ? yawObject.position : controls.getObject().position;
-            if (addPos.y < 1 && Math.abs(addPos.x - playerPos.x) < 1 && Math.abs(addPos.z - playerPos.z) < 1) return;
+    const visorMat = new THREE.MeshBasicMaterial({ color: isPlayer ? '#4ade80' : '#ff4444' });
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.1), visorMat);
+    visor.position.set(0, 1.75, -0.31); group.add(visor);
 
-            socket.emit('addBlock', { x: addPos.x, y: addPos.y, z: addPos.z, color: currentBlockColor });
-        }
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, 0.4), mat);
+    body.position.y = 0.9; body.castShadow = true; group.add(body);
+
+    const armGeo = new THREE.BoxGeometry(0.3, 0.8, 0.3);
+    const armL = new THREE.Mesh(armGeo, mat); armL.position.set(-0.55, 1.0, 0); armL.castShadow = true;
+    const armR = new THREE.Mesh(armGeo, mat); armR.position.set(0.55, 1.0, 0); armR.castShadow = true;
+    group.add(armL); group.add(armR);
+
+    const legGeo = new THREE.BoxGeometry(0.35, 0.9, 0.35);
+    const legL = new THREE.Mesh(legGeo, mat); legL.position.set(-0.2, 0.45, 0); legL.castShadow = true;
+    const legR = new THREE.Mesh(legGeo, mat); legR.position.set(0.2, 0.45, 0); legR.castShadow = true;
+    group.add(legL); group.add(legR);
+
+    if (!isPlayer) {
+        const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.8), new THREE.MeshStandardMaterial({color:'#222'}));
+        gun.position.set(0, -0.3, -0.3); armR.add(gun);
     }
+
+    group.userData = { head, body, armL, armR, legL, legR, walkTime: 0, punchTimer: 0 };
+    return group;
 }
 
-// Desktop Clicks
-if (!isMobile) {
-    document.addEventListener('mousedown', (event) => {
-        if (event.button === 0) performAction('break');
-        else if (event.button === 2) performAction('place');
-    });
-}
+const myPlayer = createHumanoid(true);
+scene.add(myPlayer);
 
-// Mobile Buttons
-document.getElementById('btn-break')?.addEventListener('touchstart', (e) => { e.preventDefault(); performAction('break'); });
-document.getElementById('btn-place')?.addEventListener('touchstart', (e) => { e.preventDefault(); performAction('place'); });
-document.getElementById('btn-jump')?.addEventListener('touchstart', (e) => { e.preventDefault(); if (canJump) { velocity.y += 10; canJump = false; } });
-document.getElementById('btn-color')?.addEventListener('touchstart', (e) => { 
-    e.preventDefault(); 
-    currentBlockColorIndex = (currentBlockColorIndex + 1) % blockColors.length;
-    currentBlockColor = blockColors[currentBlockColorIndex];
-    document.getElementById('btn-color').style.color = currentBlockColor;
-});
-
-// Color change with number keys (Desktop)
-document.addEventListener('keydown', (event) => {
-    if (event.key >= '1' && event.key <= '4') {
-        currentBlockColorIndex = parseInt(event.key) - 1;
-        currentBlockColor = blockColors[currentBlockColorIndex];
-    }
-});
-
-// ---- Movement Logic (Desktop) ----
-let moveForward = false; let moveBackward = false;
-let moveLeft = false; let moveRight = false;
-const velocity = new THREE.Vector3();
-const direction = new THREE.Vector3();
-
-const onKeyDown = function (event) {
-    switch (event.code) {
-        case 'ArrowUp': case 'KeyW': moveForward = true; break;
-        case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
-        case 'ArrowDown': case 'KeyS': moveBackward = true; break;
-        case 'ArrowRight': case 'KeyD': moveRight = true; break;
-        case 'Space': if (canJump) { velocity.y += 10; canJump = false; } break;
-    }
-};
-const onKeyUp = function (event) {
-    switch (event.code) {
-        case 'ArrowUp': case 'KeyW': moveForward = false; break;
-        case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
-        case 'ArrowDown': case 'KeyS': moveBackward = false; break;
-        case 'ArrowRight': case 'KeyD': moveRight = false; break;
-    }
-};
-if (!isMobile) {
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
-}
-
-// ---- Multiplayer Rendering ----
 const otherPlayers = {};
-const playerGeo = new THREE.CapsuleGeometry(0.4, 1, 4, 8);
-const playerMat = new THREE.MeshStandardMaterial({ color: '#ff5555' });
+const guardsMap = {};
+const camerasMap = {};
+const elevatorsMap = {};
+let colliders = [];
 
-function updateOtherPlayer(id, data) {
-    if (!otherPlayers[id]) {
-        const mesh = new THREE.Mesh(playerGeo, playerMat);
-        mesh.castShadow = true;
-        scene.add(mesh);
-        otherPlayers[id] = mesh;
-    }
-    otherPlayers[id].position.set(data.position[0], data.position[1] - 0.5, data.position[2]);
-    otherPlayers[id].rotation.y = data.rotation[1];
+// Goal
+const goalGeo = new THREE.CylinderGeometry(4, 4, 0.5, 32);
+const goalMat = new THREE.MeshBasicMaterial({ color: '#4ade80', transparent: true, opacity: 0.5 });
+const goalMesh = new THREE.Mesh(goalGeo, goalMat);
+scene.add(goalMesh);
+
+const bullets = [];
+
+// ---- Keyboard Controls ----
+const keys = { w: false, a: false, s: false, d: false };
+if (!isMobile) {
+    document.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        if (keys.hasOwnProperty(key)) keys[key] = true;
+        if (e.key === 'ArrowUp') keys.w = true; if (e.key === 'ArrowDown') keys.s = true;
+        if (e.key === 'ArrowLeft') keys.a = true; if (e.key === 'ArrowRight') keys.d = true;
+    });
+    document.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (keys.hasOwnProperty(key)) keys[key] = false;
+        if (e.key === 'ArrowUp') keys.w = false; if (e.key === 'ArrowDown') keys.s = false;
+        if (e.key === 'ArrowLeft') keys.a = false; if (e.key === 'ArrowRight') keys.d = false;
+    });
 }
 
+function getFloorHeight(x, y, z) {
+    const origin = new THREE.Vector3(x, y + 2.0, z); // cast from above
+    const raycaster = new THREE.Raycaster(origin, new THREE.Vector3(0, -1, 0), 0, 10);
+    const hits = raycaster.intersectObjects(colliders);
+    if (hits.length > 0) return hits[0].point.y;
+    return -100; // falling abyss
+}
+
+function checkWallCollision(nx, ny, nz, radius) {
+    // Simple AABB check for walls around player center
+    for (const mesh of colliders) {
+        mesh.geometry.computeBoundingBox();
+        const box = mesh.geometry.boundingBox.clone();
+        box.applyMatrix4(mesh.matrixWorld);
+        
+        // If Y is above the box or below it, ignore
+        if (ny > box.max.y || ny + 2 < box.min.y) continue; 
+        
+        // Ignore small steps (allows walking onto elevators and ramps)
+        if (box.max.y - ny <= 0.6) continue;
+        
+        const closestX = Math.max(box.min.x, Math.min(nx, box.max.x));
+        const closestZ = Math.max(box.min.z, Math.min(nz, box.max.z));
+        
+        const dx = nx - closestX;
+        const dz = nz - closestZ;
+        
+        if ((dx * dx + dz * dz) < (radius * radius)) return true;
+    }
+    return false;
+}
+
+// ---- Network ----
 socket.on('init', (data) => {
-    data.blocks.forEach(addBlockToScene);
-    for (const [id, pData] of Object.entries(data.players)) {
-        if (id !== socket.id) updateOtherPlayer(id, pData);
+    data.mapData.forEach(item => {
+        const geo = new THREE.BoxGeometry(item.w, item.h, item.d);
+        const mesh = new THREE.Mesh(geo, wallMat);
+        mesh.position.set(item.x, item.y, item.z);
+        if (item.type === 'ramp' && item.rotX) {
+            mesh.rotation.x = item.rotX;
+        }
+        mesh.updateMatrixWorld();
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        scene.add(mesh);
+        colliders.push(mesh);
+    });
+
+    if (data.elevators) {
+        const elevatorMat = new THREE.MeshStandardMaterial({ color: '#ffcc00', roughness: 0.8 });
+        data.elevators.forEach(e => {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(e.w, e.h, e.d), elevatorMat);
+            mesh.position.set(e.x, e.y, e.z);
+            mesh.updateMatrixWorld();
+            mesh.castShadow = true; mesh.receiveShadow = true;
+            scene.add(mesh);
+            colliders.push(mesh);
+            elevatorsMap[e.id] = mesh;
+        });
+    }
+
+    goalMesh.position.set(data.goalPos.x, data.goalPos.y + 0.25, data.goalPos.z);
+    myPlayer.position.set(data.startPos.x, data.startPos.y, data.startPos.z);
+
+    data.guards.forEach(gData => {
+        const gMesh = createHumanoid(false);
+        gMesh.position.set(gData.x, gData.y, gData.z);
+        
+        const coneRadius = Math.tan(gData.fovAngle / 2) * gData.fovDist;
+        const coneGeo = new THREE.ConeGeometry(coneRadius, gData.fovDist, 16);
+        coneGeo.rotateX(Math.PI / 2); coneGeo.translate(0, 0, -gData.fovDist / 2);
+        const coneMesh = new THREE.Mesh(coneGeo, visionMat);
+        coneMesh.position.y = 1.5;
+        gMesh.add(coneMesh);
+
+        const starGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+        const starMat = new THREE.MeshBasicMaterial({color:'#ffff00'});
+        const stars = new THREE.Group();
+        for(let i=0; i<3; i++){
+            const s = new THREE.Mesh(starGeo, starMat);
+            s.position.set(Math.cos(i*2.1)*0.5, 2.5, Math.sin(i*2.1)*0.5);
+            stars.add(s);
+        }
+        stars.visible = false;
+        gMesh.add(stars);
+
+        scene.add(gMesh);
+        guardsMap[gData.id] = { mesh: gMesh, cone: coneMesh, stars, state: gData.state, prevPos: new THREE.Vector3(gData.x,gData.y,gData.z) };
+    });
+
+    data.cameras.forEach(cData => {
+        const camGroup = new THREE.Group();
+        camGroup.position.set(cData.x, cData.y, cData.z);
+        const base = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), camBaseMat);
+        camGroup.add(base);
+        
+        const head = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.8), camBaseMat);
+        head.rotation.x = Math.PI/2;
+        camGroup.add(head);
+
+        const coneRadius = Math.tan(cData.fovAngle / 2) * cData.fovDist;
+        const coneGeo = new THREE.ConeGeometry(coneRadius, cData.fovDist, 16);
+        coneGeo.rotateX(Math.PI / 2); coneGeo.translate(0, 0, -cData.fovDist / 2);
+        const coneMesh = new THREE.Mesh(coneGeo, visionMat);
+        head.add(coneMesh);
+
+        scene.add(camGroup);
+        camerasMap[cData.id] = { group: camGroup, head: head };
+    });
+
+    updatePhase(data.globalPhase);
+});
+
+socket.on('syncState', (data) => {
+    data.guards.forEach(gData => {
+        const g = guardsMap[gData.id];
+        if (g) {
+            g.prevPos.copy(g.mesh.position);
+            g.mesh.position.set(gData.x, gData.y, gData.z);
+            g.mesh.rotation.y = gData.rotation;
+            g.state = gData.state;
+            g.stars.visible = (g.state === 'STUNNED');
+            g.cone.visible = (g.state !== 'STUNNED');
+        }
+    });
+
+    data.cameras.forEach(cData => {
+        const c = camerasMap[cData.id];
+        if (c) c.head.rotation.y = cData.rotation;
+    });
+
+    if (data.elevators) {
+        data.elevators.forEach(eData => {
+            const mesh = elevatorsMap[eData.id];
+            if (mesh) {
+                mesh.position.y = eData.y;
+                mesh.updateMatrixWorld();
+            }
+        });
+    }
+
+    for (const pid in data.players) {
+        if (pid === socket.id) continue;
+        const pData = data.players[pid];
+        if (pData.isDead) {
+            if (otherPlayers[pid]) { scene.remove(otherPlayers[pid]); delete otherPlayers[pid]; }
+            continue;
+        }
+        if (!otherPlayers[pid]) {
+            const mesh = createHumanoid(true);
+            scene.add(mesh);
+            otherPlayers[pid] = mesh;
+        }
+        otherPlayers[pid].userData.prevPos = otherPlayers[pid].position.clone();
+        otherPlayers[pid].position.set(pData.x, pData.y, pData.z);
+        otherPlayers[pid].rotation.y = pData.rotation;
+    }
+
+    if (data.globalPhaseTimer > 0 && (phaseText.innerText === 'ALERT' || phaseText.innerText === 'EVASION')) {
+        phaseTimerElem.innerText = Math.ceil(data.globalPhaseTimer) + 's';
+    } else {
+        phaseTimerElem.innerText = '';
     }
 });
-socket.on('playerJoin', (data) => updateOtherPlayer(data.id, data.player));
-socket.on('playerMove', (data) => updateOtherPlayer(data.id, data.player));
-socket.on('blockAdded', (block) => addBlockToScene(block));
-socket.on('blockRemoved', (pos) => removeBlockFromScene(pos));
+
 socket.on('playerLeave', (id) => {
     if (otherPlayers[id]) { scene.remove(otherPlayers[id]); delete otherPlayers[id]; }
+});
+
+socket.on('respawn', (pos) => {
+    myPlayer.position.set(pos.x, pos.y, pos.z);
+    isDead = false;
+    gameOverOverlay.style.display = 'none';
+    startGame();
+});
+
+socket.on('gameOver', () => {
+    isDead = true; isPlaying = false;
+    gameOverOverlay.style.display = 'block'; blocker.style.display = 'flex'; blocker.style.opacity = '1';
+    if(isMobile) mobileControls.style.display = 'none';
+});
+
+socket.on('gameWin', () => {
+    winOverlay.style.display = 'block';
+    setTimeout(() => { winOverlay.style.display = 'none'; }, 4000);
+});
+
+socket.on('hpUpdate', (data) => {
+    if (data.id === socket.id) {
+        hpBar.style.width = `${Math.max(0, data.hp)}%`;
+        hpText.innerText = `${Math.max(0, data.hp)} / 100`;
+        if (data.hp <= 30) hpBar.style.backgroundColor = '#ff4444';
+        else hpBar.style.backgroundColor = '#4ade80';
+    }
+});
+
+function updatePhase(phase) {
+    phaseIndicator.className = `phase-${phase.toLowerCase()}`; phaseText.innerText = phase;
+    const color = phase === 'ALERT' ? 0xff0000 : (phase === 'EVASION' ? 0xffff00 : 0x0088ff);
+    visionMat.color.setHex(color);
+}
+socket.on('phaseChange', updatePhase);
+
+socket.on('shoot', (data) => {
+    const mat = new THREE.LineBasicMaterial({ color: 0xffaa00, linewidth: 2 });
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(data.from.x, data.from.y, data.from.z), new THREE.Vector3(data.to.x, data.to.y, data.to.z)]);
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    bullets.push({ mesh: line, timer: 0.1 });
 });
 
 // ---- Animation Loop ----
 let prevTime = performance.now();
 let lastSyncTime = 0;
+let playerVelocityY = 0;
+
+function animateHumanoid(h, distMoved, dt) {
+    const ud = h.userData;
+    if (distMoved > 0.01) {
+        ud.walkTime += dt * 10;
+        ud.armL.rotation.x = Math.sin(ud.walkTime) * 0.5; ud.armR.rotation.x = -Math.sin(ud.walkTime) * 0.5;
+        ud.legL.rotation.x = -Math.sin(ud.walkTime) * 0.5; ud.legR.rotation.x = Math.sin(ud.walkTime) * 0.5;
+    } else {
+        ud.armL.rotation.x = 0; ud.armR.rotation.x = 0;
+        ud.legL.rotation.x = 0; ud.legR.rotation.x = 0;
+    }
+    if (ud.punchTimer > 0) { ud.punchTimer -= dt; ud.armR.rotation.x = -Math.PI / 2; }
+}
 
 function animate() {
     requestAnimationFrame(animate);
     const time = performance.now();
-    const delta = (time - prevTime) / 1000;
+    const dt = (time - prevTime) / 1000;
+    prevTime = time;
 
-    if (isPlaying) {
-        velocity.x -= velocity.x * 10.0 * delta;
-        velocity.z -= velocity.z * 10.0 * delta;
-        velocity.y -= 30.0 * delta; 
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].timer -= dt;
+        if (bullets[i].timer <= 0) { scene.remove(bullets[i].mesh); bullets.splice(i, 1); }
+    }
 
-        if (isMobile) {
-            // Apply Joystick movement
-            // Joystick is rotated 90deg internally (sin/cos mapping above)
-            direction.z = -joyMoveForward;
-            direction.x = joyMoveRight;
-            
-            // Manual movement relative to yawObject rotation
-            const moveVec = new THREE.Vector3(direction.x, 0, direction.z);
-            moveVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yawObject.rotation.y);
-            
-            velocity.x += moveVec.x * 100.0 * delta;
-            velocity.z += moveVec.z * 100.0 * delta;
+    for (const gid in guardsMap) {
+        const g = guardsMap[gid];
+        const dist = new THREE.Vector2(g.mesh.position.x - g.prevPos.x, g.mesh.position.z - g.prevPos.z).length();
+        animateHumanoid(g.mesh, dist, dt);
+        if (g.state === 'STUNNED') g.stars.rotation.y += dt * 5;
+    }
+    for (const pid in otherPlayers) {
+        const p = otherPlayers[pid];
+        const dist = new THREE.Vector2(p.position.x - p.userData.prevPos.x, p.position.z - p.userData.prevPos.z).length();
+        animateHumanoid(p, dist, dt);
+    }
 
-            yawObject.position.x += velocity.x * delta;
-            yawObject.position.z += velocity.z * delta;
-            yawObject.position.y += velocity.y * delta;
-
-            if (yawObject.position.y < 2) {
-                velocity.y = 0;
-                yawObject.position.y = 2;
-                canJump = true;
-            }
-        } else {
-            direction.z = Number(moveForward) - Number(moveBackward);
-            direction.x = Number(moveRight) - Number(moveLeft);
-            direction.normalize();
-
-            if (moveForward || moveBackward) velocity.z -= direction.z * 40.0 * delta;
-            if (moveLeft || moveRight) velocity.x -= direction.x * 40.0 * delta;
-
-            controls.moveRight(-velocity.x * delta);
-            controls.moveForward(-velocity.z * delta);
-            controls.getObject().position.y += (velocity.y * delta);
-
-            if (controls.getObject().position.y < 2) {
-                velocity.y = 0;
-                controls.getObject().position.y = 2;
-                canJump = true;
-            }
+    if (isPlaying && !isDead) {
+        let dx = 0; let dz = 0;
+        if (isMobile) { dx = joyMoveX; dz = joyMoveZ; } 
+        else {
+            if (keys.a) dx -= 1; if (keys.d) dx += 1;
+            if (keys.w) dz -= 1; if (keys.s) dz += 1;
+            if (dx !== 0 && dz !== 0) { const len = Math.sqrt(dx*dx + dz*dz); dx /= len; dz /= len; }
         }
 
+        const speed = 8;
+        const moveX = dx * speed * dt;
+        const moveZ = dz * speed * dt;
+        
+        const isMoving = Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01;
+        if (isMoving) myPlayer.rotation.y = Math.atan2(dx, dz) + Math.PI;
+
+        animateHumanoid(myPlayer, isMoving ? 1 : 0, dt);
+
+        let nextX = myPlayer.position.x + moveX;
+        let nextZ = myPlayer.position.z + moveZ;
+        const radius = 0.5;
+
+        // X/Z Collision
+        if (checkWallCollision(nextX, myPlayer.position.y, myPlayer.position.z, radius)) nextX = myPlayer.position.x;
+        if (checkWallCollision(myPlayer.position.x, myPlayer.position.y, nextZ, radius)) nextZ = myPlayer.position.z;
+        
+        myPlayer.position.x = nextX;
+        myPlayer.position.z = nextZ;
+
+        // Y Gravity & Floor detection
+        const floorY = getFloorHeight(myPlayer.position.x, myPlayer.position.y, myPlayer.position.z);
+        if (myPlayer.position.y > floorY + 0.1) {
+            playerVelocityY -= 20 * dt; // gravity
+            myPlayer.position.y += playerVelocityY * dt;
+            if (myPlayer.position.y <= floorY) {
+                myPlayer.position.y = floorY;
+                playerVelocityY = 0;
+            }
+        } else if (floorY > myPlayer.position.y) {
+            // Walking up a ramp or stepping up
+            myPlayer.position.y += (floorY - myPlayer.position.y) * 10 * dt; // smooth step up
+            playerVelocityY = 0;
+        }
+
+        // Camera follow
+        camera.position.x += (myPlayer.position.x - camera.position.x) * 5 * dt;
+        camera.position.z += (myPlayer.position.z + 18 - camera.position.z) * 5 * dt;
+        camera.position.y += (myPlayer.position.y + 25 - camera.position.y) * 5 * dt;
+        camera.lookAt(camera.position.x, myPlayer.position.y, camera.position.z - 18);
+
         if (time - lastSyncTime > 50) {
-            const pos = isMobile ? yawObject.position : controls.getObject().position;
-            const rotY = isMobile ? yawObject.rotation.y : camera.rotation.y; 
-            const rotX = isMobile ? pitchObject.rotation.x : camera.rotation.x;
-            
-            socket.emit('updatePlayer', {
-                position: [pos.x, pos.y, pos.z],
-                rotation: [rotX, rotY, 0]
-            });
+            socket.emit('updatePlayer', { x: myPlayer.position.x, y: myPlayer.position.y, z: myPlayer.position.z, rotation: myPlayer.rotation.y });
             lastSyncTime = time;
         }
     }
 
     renderer.render(scene, camera);
-    prevTime = time;
 }
 
 animate();
